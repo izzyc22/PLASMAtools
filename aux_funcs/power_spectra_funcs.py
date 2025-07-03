@@ -11,17 +11,32 @@
 ## IMPORTS
 ## ###############################################################
 
-import numpy.fft as fft
 import numpy as np
 import multiprocessing
+
+pyfftw_import = False
 try: 
     import pyfftw
     pyfftw_import = True
     pyfftw.interfaces.cache.enable()
     threads = multiprocessing.cpu_count()
+    print(f"power_spectra_funcs: Using {threads} threads for FFTs with pyfftw.")
 except ImportError:
     print("pyfftw not installed, using scipy's serial fft")
-pyfftw_import = False
+
+if pyfftw_import:
+    # Use pyfftw for faster FFTs if available
+    pyfftw.config.NUM_THREADS = threads
+    fftn = pyfftw.interfaces.numpy_fft.fftn
+    ifftn = pyfftw.interfaces.numpy_fft.ifftn
+    fftfreq = pyfftw.interfaces.numpy_fft.fftfreq
+    fftshift = pyfftw.interfaces.numpy_fft.fftshift
+else:
+    # Use numpy's FFT functions
+    fftn = np.fft.fftn
+    ifftn = np.fft.ifftn
+    fftfreq = np.fft.fftfreq
+    fftshift = np.fft.fftshift
 
 ## ###############################################################
 ## Spectral Functions
@@ -48,10 +63,10 @@ def compute_power_spectrum_3D(field: np.ndarray) -> np.ndarray:
     # then sum all the square components to get the power spectrum   
     return np.sum(
         np.abs(
-            np.fft.fftshift(
-                np.fft.fftn(field,
-                            axes=(1, 2, 3),
-                            norm='forward'),
+            fftshift(
+                fftn(field,
+                     axes=(1, 2, 3),
+                     norm='forward'),
                 axes=(1, 2, 3)))**2,
         axis=0)
 
@@ -76,10 +91,10 @@ def compute_power_spectrum_2D(field: np.ndarray) -> np.ndarray:
     # then sum all the square components to get the power spectrum   
     return np.sum(
         np.abs(
-            np.fft.fftshift(
-                np.fft.fftn(field,
-                            axes=(1, 2),
-                            norm='forward'),
+            fftshift(
+                fftn(field,
+                     axes=(1, 2),
+                     norm='forward'),
                 axes=(1, 2)))**2,
         axis=0)    
 
@@ -110,8 +125,8 @@ def compute_tensor_power_spectrum(field: np.ndarray) -> np.ndarray:
     # then sum all the square components to get the power spectrum   
     return np.sum(
         np.abs(
-            np.fft.fftshift(
-                np.fft.fftn(
+            fftshift(
+                fftn(
                     field,
                     axes=(2,3,4),
                     norm='forward')))**2,
@@ -262,11 +277,13 @@ def cylindrical_integrate(data: np.ndarray,
     # Use np.bincount for efficient summation
     cylindrical_sum = np.bincount(linear_indices.ravel(), 
                                   weights=data.ravel(), 
-                                  minlength=bins_perp * bins_para)
+                                  minlength=bins_perp * bins_para) 
     
     # Ensure that the length matches the expected size
     cylindrical_sum = cylindrical_sum[:bins_perp * bins_para]
-    cylindrical_sum = cylindrical_sum.reshape((bins_perp, bins_para))
+    cylindrical_sum = cylindrical_sum.reshape((bins_perp, bins_para),
+                                              order='F')
+    # k_perp are in the first axis, k_par are in the second axis
     k_perp_modes    = (bin_edges_perp[:-1] + bin_edges_perp[1:]) / 2
     k_para_modes    = (bin_edges_para[:-1] + bin_edges_para[1:]) / 2
 
@@ -284,7 +301,6 @@ def helical_decomposition(vector_field):
     u_plus (array): The component of the vector field in the direction of the right-handed helical component.
     u_minus (array): The component of the vector field in the direction of the left-handed helical component.
     
-    
     TODO: this whole function needs to be updated to conform to 3,N,N,N vecotr fields instead of
           N,N,N,3 vector fields
     """
@@ -292,14 +308,14 @@ def helical_decomposition(vector_field):
     vector_field = np.asarray(vector_field)
     
     # Take FFT of vector field
-    vector_field_FFT = fft.fftn(vector_field,
-                                norm='forward',
-                                axes=(0,1,2))
+    vector_field_FFT = fftn(vector_field,
+                            norm='forward',
+                            axes=(0,1,2))
     N = vector_field.shape[0]  # Assuming a cubic domain
     L = 1  # The physical size of the domain
-    kx = fft.fftfreq(N, d=L/N)
-    ky = fft.fftfreq(N, d=L/N)
-    kz = fft.fftfreq(N, d=L/N)
+    kx = fftfreq(N, d=L/N)
+    ky = fftfreq(N, d=L/N)
+    kz = fftfreq(N, d=L/N)
     
     kx, ky, kz = np.meshgrid(kx, ky, kz, indexing='ij')
     k = np.stack((kx, ky, kz), axis=-1)  # This will be of shape (N, N, N, 3)
@@ -381,9 +397,9 @@ def create_helical_field(N, k_index, A_plus=1, A_minus=0):
 
     # Generate the wavevector
     L = 1
-    kx, ky, kz = np.meshgrid(np.fft.fftfreq(N, d=L/N), 
-                             np.fft.fftfreq(N, d=L/N), 
-                             np.fft.fftfreq(N, d=L/N), indexing='ij')
+    kx, ky, kz = np.meshgrid(fftfreq(N, d=L/N), 
+                             fftfreq(N, d=L/N), 
+                             fftfreq(N, d=L/N), indexing='ij')
     k = np.stack((kx, ky, kz), axis=-1)
 
     # Calculate h_plus and h_minus for the selected wavevector
@@ -412,7 +428,7 @@ def create_helical_field(N, k_index, A_plus=1, A_minus=0):
     field_fft[k_index] = A_plus * h_plus + A_minus * h_minus
 
     # Perform inverse FFT to get the field in physical space
-    field = fft.ifftn(field_fft, axes=(0, 1, 2),norm="forward").real
+    field = ifftn(field_fft, axes=(0, 1, 2),norm="forward").real
 
     return field
 
@@ -455,9 +471,10 @@ def generate_isotropic_powerlaw_field(size:  int,
 
     return np.fft.ifftn(adjusted_field).real
 
-def generate_anisotropic_powerlaw_field(size:  int,
-                                        alpha: float = 5./3.,
-                                        beta:  float = 5./3.) -> np.ndarray:
+def generate_anisotropic_powerlaw_field(N:      int,
+                                        alpha:  float = 5./3.,
+                                        beta:   float = 5./3.,
+                                        L:      float = 1.0) -> np.ndarray:
     """
     This computes a random field with a power-law power spectrum. The power spectrum
     is P(k) = k_perp^-alpha k_parallel^-beta. The field is generated in Fourier space, 
@@ -466,37 +483,48 @@ def generate_anisotropic_powerlaw_field(size:  int,
     Author: James Beattie
 
     Args:
-        size (int): the linear dimension of the 3D field
+        N (int): the linear dimension of the 3D field
         alpha (float): the negative 1D power-law exponent used in Fourier space for the 
                         perpendicular component. Defaults to 5/3.
                         Note that I make the transformations between 3D Fourier transform 
                         exponent and 1D power spectrum exponent in the code.
         beta (float): the negative 1D power-law exponent used in Fourier space for the 
                         parallel component. Defaults to 5/3.
+        L (float): the physical size of the domain. Defaults to 1.0.
 
     Returns:
         ifft field (np.ndarray): the inverse fft of the random field with a power-law power spectrum
     """
+    
     # Create a grid of frequencies
-    kx = np.fft.fftfreq(size)
-    ky = np.fft.fftfreq(size)
-    kz = np.fft.fftfreq(size)
+    kx = np.fft.fftfreq(N)
+    ky = np.fft.fftfreq(N)
+    kz = np.fft.rfftfreq(N)   
     
     kx, ky, kz = np.meshgrid(kx, ky, kz, indexing='ij')
     
     # Calculate the magnitude of k for each frequency component
     k_perp              = np.sqrt(kx**2 + ky**2)
     k_par               = np.abs(kz)
-    k_perp[k_perp==0]   = 1   # Avoid division by zero
-    k_par[k_par==0]     = 1    # Avoid division by zero
+    k_perp[k_perp==0]   = np.inf   # Avoid division by zero
+    k_par[k_par==0]     = np.inf   # Avoid division by zero
     
-    # Create a 3D grid of random complex numbers for phases
-    random_field = np.random.randn(size, size, size) + 1j * np.random.randn(size, size, size)
     
     # Adjust the amplitude of each frequency component to follow k^-5/3 (-11/3 in 3D)
-    amplitude = k_perp**(-(alpha)/2.0)*k_par**(-(beta)/2.0)
+    amplitude = k_perp**(-(alpha+1.0)/2.0)*k_par**(-beta/2.0)
 
-    return np.fft.ifftn(10*random_field * amplitude).real
+    # Create a 3D grid of random complex numbers for phases
+    rphase = np.exp(2j*np.pi*np.random.rand(*amplitude.shape))
+    
+    Fhalf = 10*rphase * amplitude
+    Fhalf[0,0,0] = 0.0  # Set the zero mode to zero to avoid DC component
+    
+    # build full cube via Hermitian symmetry
+    F = np.zeros((N, N, N), dtype=complex)
+    F[:, :, :N//2+1] = Fhalf
+    F[:, :, N//2+1:] = np.conj(Fhalf[:, :, 1:N//2][..., ::-1])
+
+    return np.fft.ifftn(F,norm="forward").real
 
 def extract_isotropic_shell_X(vector_field: np.ndarray,
                               k_minus_dk:   float,
@@ -528,17 +556,17 @@ def extract_isotropic_shell_X(vector_field: np.ndarray,
     k_plus_dk  = 2 * np.pi / L * k_plus_dk
     
     # Take FFT of vector field
-    vector_field_FFT = fft.fftn(vector_field,
-                                norm='forward',
-                                axes=(1,2,3))
+    vector_field_FFT = fftn(vector_field,
+                            norm='forward',
+                            axes=(1,2,3))
 
     # Assuming a cubic domain    
     N = vector_field.shape[1]  
             
     # wave vectors
-    kx = 2 * np.pi * fft.fftfreq(N, d=L/N) / L
-    ky = 2 * np.pi * fft.fftfreq(N, d=L/N) / L
-    kz = 2 * np.pi * fft.fftfreq(N, d=L/N) / L
+    kx = 2 * np.pi * fftfreq(N, d=L/N) / L
+    ky = 2 * np.pi * fftfreq(N, d=L/N) / L
+    kz = 2 * np.pi * fftfreq(N, d=L/N) / L
     
     kx, ky, kz = np.meshgrid(kx, ky, kz, indexing='ij')
     k = np.array([kx,ky,kz]) # This will be of shape (3, N, N, N)
@@ -557,9 +585,9 @@ def extract_isotropic_shell_X(vector_field: np.ndarray,
         shell_k = Gauss_filter(k_norm,(k_minus_dk+k_plus_dk)/2.0) * vector_field_FFT
     
     # Inverse FFT with just the wavenumbers from the shell 
-    return np.fft.ifftn(shell_k,
-                           axes=(1,2,3),
-                           norm="forward").real
+    return ifftn(shell_k,
+                 axes=(1,2,3),
+                 norm="forward").real
 
 
 def extract_shell_X_2D(vector_field    : np.ndarray,
@@ -620,8 +648,8 @@ def extract_shell_X_2D(vector_field    : np.ndarray,
     #assert np.shape(vector_field)[0] == 2, "Error: Vector field must be 2D."
     
     N = vector_field.shape
-    kx = 2 * np.pi * fft.fftfreq(N, d=L[0]/N[0]) / L[0]
-    ky = 2 * np.pi * fft.fftfreq(N, d=L[1]/N[1]) / L[1]
+    kx = 2 * np.pi * fftfreq(N, d=L[0]/N[0]) / L[0]
+    ky = 2 * np.pi * fftfreq(N, d=L[1]/N[1]) / L[1]
     
     def filter(kmin, kmax, kx, ky, filter_type):
         kx, ky = np.meshgrid(kx, ky, indexing='ij')
@@ -636,12 +664,12 @@ def extract_shell_X_2D(vector_field    : np.ndarray,
 
     # Inverse FFT with just the wavenumbers from the shell 
     return np.real(
-        np.fft.ifftn(
+        ifftn(
             filter(k_minus_dk, 
                    k_plus_dk, 
                    kx, 
                    ky, 
-                   'twod') * np.fft.fftn(
+                   'twod') * fftn(
                 vector_field,
                 norm='forward',
                 axes=(1, 2)),
