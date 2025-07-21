@@ -1,11 +1,11 @@
 """
-    Title:          Derived Variable Functions
-    Author:         James R. Beattie
-    Description:    Functions for calculating derived variables in the read class
-    
-    
-    Collaborators:  Neco Kriel, Tanisha Ghosal, Anne Noer Kolborg, 
-                    Shashvat Varma, 
+Title:          Derived Variable Functions
+Author:         James R. Beattie
+Description:    Functions for calculating derived variables in the read class
+
+
+Collaborators:  Neco Kriel, Tanisha Ghosal, Anne Noer Kolborg, 
+                Shashvat Varma, 
 
 """
 
@@ -15,53 +15,27 @@
 
 # python dependencies
 import numpy as np
-import multiprocessing
-
-pyfftw_import = False
-try: 
-    import pyfftw
-    pyfftw_import = True
-    pyfftw.interfaces.cache.enable()
-    threads = multiprocessing.cpu_count()
-except ImportError:
-    print("pyfftw not installed, using scipy's serial fft")
-
-if pyfftw_import:
-    # Use pyfftw for faster FFTs if available
-    pyfftw.config.NUM_THREADS = threads
-    fftn = pyfftw.interfaces.numpy_fft.fftn
-    ifftn = pyfftw.interfaces.numpy_fft.ifftn
-    fftfreq = pyfftw.interfaces.numpy_fft.fftfreq
-    fftshift = pyfftw.interfaces.numpy_fft.fftshift
-else:
-    # Use numpy's FFT functions
-    fftn = np.fft.fftn
-    ifftn = np.fft.ifftn
-    fftfreq = np.fft.fftfreq
-    fftshift = np.fft.fftshift
 
 # import derivative stencils
-from .derivative.derivatives_numba import Derivative
-from .tensor import TensorOperations
-from .vector import VectorOperations
-from .scalar import ScalarOperations
-from .spectral import SpectralOperations
+from ..derivative.derivatives_numba import Derivative
+from .constants import *
+from .core_functions import *
+from .utils import *
 
-## ###############################################################
-## Global variables
-## ###############################################################
-
-# indexes
-X,Y,Z = 0, 1, 2
-
-# TODO: make consistent throughout library:
+# Keep consistent throughout library:
 # scalar fields : 1,N,N,N   (i, x, y, z)
 # vector fields : 3,N,N,N   (i, x, y, z)
 # tensor fields : M,M,N,N,N (i, j, x, y, z)
 
-boundary_lookup = {0: 'periodic', 
-                   1: 'neumann', 
-                   2: 'dirichlet'}
+# Note: for power spectra we are using the SpetraOperations class.
+# self._do_fft( is used to compute the FFT of the vector field.
+        # self, 
+        # data, 
+        # axes, 
+        # forward=True, 
+        # real=False, 
+        # norm='forward')
+# is the signature of the function.
 
 ## ###############################################################
 ## Derived Variable Functions
@@ -122,7 +96,6 @@ class DerivedVars(ScalarOperations,
             self)
         SpectralOperations.__init__(
             self,
-            self.num_of_dims,
             self.L,
             cache_plans=False)
         
@@ -144,8 +117,9 @@ class DerivedVars(ScalarOperations,
             print(f"DerivedVariables: L={L}, stencil={stencil}, bcs={bcs}, mu0={mu0}, num_of_dims={num_of_dims}, debug={debug}")
         
         
-    def set_stencil(self,
-                    stencil : int) -> None:
+    def _set_stencil(
+        self,
+        stencil : int) -> None:
         """
         Set the stencil for the finite difference derivative.
         
@@ -153,11 +127,13 @@ class DerivedVars(ScalarOperations,
         finite difference derivative.
         """
         self.stencil = stencil  
-        self.set_derivative(self.stencil)
+        self._set_derivative(
+            self.stencil)
         
         
-    def set_derivative(self,
-                       stencil : int) -> None:
+    def _set_derivative(
+        self,
+        stencil : int) -> None:
         """
         Set the stencil for the finite difference derivative.
         
@@ -167,103 +143,9 @@ class DerivedVars(ScalarOperations,
         self.d = Derivative(stencil)
     
     
-    def vector_potential(self,
-                        vector_field   : np.ndarray,
-                        debug          : bool          = False):
-        """
-        Calculate the vector potential of a vector field in both 2D and 3D.
-        
-        Author:
-            James Beattie (2024)
-
-        Args:
-            vector_field (np.ndarray): The input vector field. For 3D, it should be of shape (3, N, N, N);
-                                    for 2D, it should be of shape (2, N, N).
-            debug (bool): If True, returns the reconstructed vector field for debugging.
-
-        Returns:
-            if self.num_of_dims == 3 (three-dimensional):
-                a (np.ndarray): The vector potential of shape (3, N, N, N).
-                b_recon (np.ndarray, optional): The reconstructed vector field if debug is True.
-            if self.num_of_dims == 2 (two-dimensional):
-                psi (np.ndarray): The scalar potential of shape (N, N).
-                F_recon (np.ndarray, optional): The reconstructed vector field if debug is True.
-        """
-        
-        # Assuming a cubic domain
-        N = vector_field.shape  
-
-        # Wave vectors
-        kx = 2 * np.pi * fftfreq(N[1], d=self.L[0]/N[1]) / self.L[0]
-        ky = 2 * np.pi * fftfreq(N[2], d=self.L[1]/N[2]) / self.L[1]
- 
-        if self.num_of_dims == 3:
-            # add extra dimension for 3D
-            kz = 2 * np.pi * fftfreq(N[3], d=self.L[2]/N[3]) / self.L[2]
-            
-            # create three dimensional mesh
-            kx, ky, kz = np.meshgrid(kx, ky, kz, indexing='ij')
-            k = np.array([kx,ky,kz])  # Shape: (3, N, N, N)
-            
-            # Normalize k to get the unit wavevector
-            k_norm = np.tile(np.linalg.norm(k, 
-                                            axis=0, 
-                                            keepdims=True), 
-                            (3, 1, 1, 1)) # This will be of shape (1, N, N, N)
-            
-            k_norm[k_norm == 0] = np.inf  # Avoid division by zero
-
-            # Compute the vector potential in Fourier space
-            a_hat = 1j * self.vector_cross_product(k, fftn(vector_field,
-                                                           axes = (1,2,3),
-                                                           norm = 'forward')) / k_norm**2
-
-            # Inverse FFT to get the vector potential in real space
-            a = np.real(ifftn(a_hat,
-                              axes=(1,2,3),
-                              norm='forward'))
-
-
-            if debug:
-                # Reconstruct the vector field for debugging
-                self.set_stencil(4)
-                b_recon = self.vector_curl(a)  
-                self.set_stencil(2)
-                return a, b_recon
-            
-            return a
-
-        elif self.num_of_dims == 2:
-            # create two dimensional mesh
-            kx, ky = np.meshgrid(kx, ky, indexing='ij')
-            k = np.array([kx,ky])
-            k_norm = np.sqrt(kx**2 + ky**2)
-            k_norm[k_norm == 0] = np.inf  # Avoid division by zero
-
-            # Compute the stream function in Fourier space
-            a_hat = 1j * self.vector_cross_product(k,fftn(vector_field,
-                                                          axes = (1,2),
-                                                          norm = 'forward')) / k_norm**2
-
-            # Inverse FFT to get the scalar potential in real space
-            a = np.real(ifftn(a_hat,
-                              axes=(0,1),
-                              norm='forward'))
-            
-            if debug: 
-                print(a.shape)
-                grad_a = self.scalar_gradient(a)
-                b_recon = np.array([grad_a[1],-grad_a[0]])
-                return a, b_recon
-
-            return a
-
-        else:
-            raise ValueError("vector_f ield must have 2 or 3 components")
-
-
-    def magnetic_helicity(self,
-                          magnetic_vector_field : np.ndarray ) -> np.ndarray:
+    def magnetic_helicity(
+        self,
+        magnetic_vector_field : np.ndarray ) -> np.ndarray:
         """
         Compute the magnetic helicity in the Coloumb gauge (gauge fixed).
         
@@ -273,18 +155,28 @@ class DerivedVars(ScalarOperations,
             magnetic_vector_field (np.ndarray): 3,N,N,N array of vector field,
             
         Returns:
-            magnetic helicity (np.ndarray): N,N,N array of magnetic helicity (a . b).
+            magnetic helicity (np.ndarray): 1,N,N,N array of magnetic helicity (a . b).
         
         """
+        
+        out = np.zeros_like(
+            magnetic_vector_field[X])
+        
+        #TODO: need to fix up z axis to accomodate for only read
+        # FFT (saves factor > 2 in memory but produces Nx, Ny, Nz/2 outputs)
+        
+        # compute the magnetic helicity   
+        out = self.vector_dot_product(
+            self.vector_potential(
+                magnetic_vector_field),
+            magnetic_vector_field)
+         
+        return out[np.newaxis, ...]  # Add new axis for compatibility
 
-        # compute the magnetic helicity    
-        return np.array([self.vector_dot_product(
-            self.vector_potential(magnetic_vector_field),
-            magnetic_vector_field)])
 
-
-    def kinetic_helicity(self,
-                         velocity_vector_field : np.ndarray ) -> np.ndarray:
+    def kinetic_helicity(
+        self,
+        velocity_vector_field : np.ndarray ) -> np.ndarray:
         """
         Compute the kinetic helicity of a velocity field.
         
@@ -294,18 +186,25 @@ class DerivedVars(ScalarOperations,
             velocity_vector_field (np.ndarray): 3,N,N,N array of vector field,
             
         Returns:
-            kinetic helicity (np.ndarray): N,N,N array of kinetic helicity (omega . v).
+            kinetic helicity (np.ndarray): 1,N,N,N array of kinetic helicity (omega . v).
         
         """
         
+        out = np.zeros_like(
+            velocity_vector_field[X])
+        
         # compute the kinetic helicity
-        return np.array([self.vector_dot_product(
-            self.vector_curl(velocity_vector_field),
-            velocity_vector_field)])
+        out = self.vector_dot_product(
+            self.vector_curl(
+                velocity_vector_field),
+            velocity_vector_field)
+        
+        return out[np.newaxis, ...]  # Add new axis for compatibility
     
     
-    def current_helicity(self,
-                         magnetic_vector_field : np.ndarray ) -> np.ndarray:
+    def current_helicity(
+        self,
+        magnetic_vector_field : np.ndarray ) -> np.ndarray:
         """
         Compute the current helicity of a magnetic field.
         
@@ -315,30 +214,45 @@ class DerivedVars(ScalarOperations,
             magnetic_vector_field (np.ndarray): 3,N,N,N array of vector field,
             
         Returns:
-            current helicity (np.ndarray): N,N,N array of current helicity (j . b).
+            current helicity (np.ndarray): 1,N,N,N array of current helicity (j . b).
         
         """
+        
+        out = np.zeros_like(
+            magnetic_vector_field[X])
 
         # compute the current helicity
-        return np.array([self.vector_dot_product(
-            self.vector_curl(magnetic_vector_field) / self.mu0,
-            magnetic_vector_field)])
+        out = self.vector_dot_product(
+            self.vector_curl(
+                magnetic_vector_field) / self.mu0,
+            magnetic_vector_field)
+
+        return out[np.newaxis, ...]  # Add new axis for compatibility
    
        
-    def gradient_tensor(self,
-                        vector_field: np.ndarray) -> np.ndarray:
+    def gradient_tensor(
+        self,
+        vector_field: np.ndarray) -> np.ndarray:
         """
-        Compute the gradient tensor of a vector field, fast.
+        Compute the gradient tensor of a vector field, fast :).
         """
         
-        return self.d.gradient_tensor_fast(vector_field,
-                                           self.L[X])
+        out = np.zeros((self.num_of_dims, 
+                        self.num_of_dims, 
+                        *vector_field[X].shape),
+                       dtype=vector_field.dtype)
+        
+        out = self.d.gradient_tensor_fast(
+            vector_field,
+            self.L[X])
+        
+        return out
 
 
-
-    def vector_dot_gradient_tensor(self,
-                                   vector_field_1 : np.ndarray,
-                                   vector_field_2 : np.ndarray) -> np.ndarray:
+    def vector_dot_gradient_tensor(
+        self,
+        vector_field_1 : np.ndarray,
+        vector_field_2 : np.ndarray) -> np.ndarray:
         """
         u_j partial_j u_i
         
@@ -348,26 +262,35 @@ class DerivedVars(ScalarOperations,
         
         """
         
-        return np.array([vector_field_1[X] * self.d.gradient(vector_field_2[coord], 
-                                                              gradient_dir=X, 
-                                                              L=self.L[X],
-                                                              boundary_condition=self.bcs[X]) + 
-                         vector_field_1[Y] * self.d.gradient(vector_field_2[coord], 
-                                                              gradient_dir=Y, 
-                                                              L=self.L[Y],
-                                                              boundary_condition=self.bcs[Y]) +
-                         vector_field_1[Z] * self.d.gradient(vector_field_2[coord], 
-                                                              gradient_dir=Z, 
-                                                              L=self.L[Z],
-                                                              boundary_condition=self.bcs[Z]) for coord in self.coords])
+        out = np.zeros((self.num_of_dims, 
+                        *vector_field_1[X].shape),
+                       dtype=vector_field_1.dtype)
+        
+        out = np.array([vector_field_1[X] * self.d.gradient(
+            vector_field_2[coord], 
+            gradient_dir=X, 
+            L=self.L[X],
+            boundary_condition=self.bcs[X]) + 
+                        vector_field_1[Y] * self.d.gradient(
+                            vector_field_2[coord], 
+                            gradient_dir=Y, 
+                            L=self.L[Y],
+                            boundary_condition=self.bcs[Y]) +
+                         vector_field_1[Z] * self.d.gradient(
+                            vector_field_2[coord], 
+                            gradient_dir=Z, 
+                            L=self.L[Z],
+                            boundary_condition=self.bcs[Z]) for coord in self.coords])
+        
+        return out
                                       
 
-
-    def vorticity_decomp(self,
-                         velocity_vector_field    : np.ndarray,
-                         magnetic_vector_field    : np.ndarray    = None,
-                         density_scalar_field     : np.ndarray    = None,
-                         pressure_scalar_field    : np.ndarray    = None) -> np.ndarray:
+    def vorticity_decomp(
+        self,
+        velocity_vector_field    : np.ndarray,
+        magnetic_vector_field    : np.ndarray    = None,
+        density_scalar_field     : np.ndarray    = None,
+        pressure_scalar_field    : np.ndarray    = None) -> np.ndarray:
         """
         Compute the terms in the vorticity equation, including the compressive, stretching, baroclinic,
         baroclinic magnetic, and tension terms. The magnetised (ideal) vorticity equation is given by:
@@ -418,32 +341,42 @@ class DerivedVars(ScalarOperations,
         # now construct the terms in the vorticity equation
         
         # compute the vorticity, omega = nabla \times u
-        omega = self.vector_curl(velocity_vector_field)
+        omega = self.vector_curl(
+            velocity_vector_field)
         
         # vorticity compression term, - (2/3) (nabla . u) omega
-        compress = - 2.0 * omega/3.0 * self.vector_divergence(velocity_vector_field)   
+        compress = - 2.0 * omega/3.0 * self.vector_divergence(
+            velocity_vector_field)[X]   
         
         # vortex stretching term, omega . nabla u
         grad_u =  self.gradient_tensor(velocity_vector_field)
-        tensor_trace = (1./self.num_of_dims) * np.einsum('...,ij...->ij...',
-                                                            np.einsum("ii...",grad_u),
-                                                            np.identity(self.num_of_dims))
-        stretch = self.vector_dot_tensor_i_ij(omega, grad_u - tensor_trace)
+        
+        stretch_tensor = self.orthogonal_tensor_decomposition(
+            grad_u,
+            sym=True)
+        
+        stretch = self.vector_dot_tensor_i_ij(
+            omega, 
+            stretch_tensor)
         
         # if the magnetic and density is not None, compute the magnetic terms
         if ( magnetic_vector_field is not None ) and ( density_scalar_field is not None ):
                     
             # magnetic baroclinic term, 1/rho^2 nabla rho \times nabla b^2 / 2mu_0
             baroclinic_magnetic = (1./density_scalar_field[X]**2) * self.vector_cross_product(
-                self.scalar_gradient(np.array([self.vector_dot_product(magnetic_vector_field,
-                                                             magnetic_vector_field) / (2 * self.mu0)])),
-                self.scalar_gradient(density_scalar_field))
+                self.scalar_gradient(
+                    self.vector_dot_product(
+                        magnetic_vector_field,
+                        magnetic_vector_field) / (2 * self.mu0)),
+                self.scalar_gradient(
+                    density_scalar_field))
             
             # magnetic tension term 1/\mu_0 \nabla \times (1/\rho) b . \nabla b)
             tension = self.vector_curl(
                 (1./density_scalar_field[X]) * self.vector_dot_tensor_i_ij(
                     magnetic_vector_field,
-                    self.gradient_tensor(magnetic_vector_field)) / self.mu0
+                    self.gradient_tensor(
+                        magnetic_vector_field)) / self.mu0
                 )
             
         # if density and pressure is not None, compute the baroclinic term
@@ -451,15 +384,18 @@ class DerivedVars(ScalarOperations,
             
             # baroclinic term, 1/\rho^2 \nabla p \times \nabla \rho
             baroclinic = (1/ density_scalar_field[X]**2) * self.vector_cross_product(
-                self.scalar_gradient(pressure_scalar_field),
-                self.scalar_gradient(density_scalar_field)
+                self.scalar_gradient(
+                    pressure_scalar_field),
+                self.scalar_gradient(
+                    density_scalar_field)
                 )
             
         return omega, compress, stretch, baroclinic, baroclinic_magnetic, tension
         
         
-    def tension_force(self,
-                      magnetic_vector_field : np.ndarray) -> np.ndarray:
+    def tension_force(
+        self,
+        magnetic_vector_field : np.ndarray) -> np.ndarray:
         """
         Compute the tension force from the magnetic field.
         
@@ -471,13 +407,18 @@ class DerivedVars(ScalarOperations,
             
         """
         
-        return self.vector_dot_tensor_i_ij(magnetic_vector_field,
-                                      self.gradient_tensor(magnetic_vector_field)) / self.mu0
+        out = np.zeros_like(magnetic_vector_field)
+        out =self.vector_dot_tensor_i_ij(
+            magnetic_vector_field,
+            self.gradient_tensor(
+                magnetic_vector_field)) / self.mu0 
+        return out
         
         
-    def symmetric_eigvals(self, 
-                          tensor_field : np.ndarray, 
-                          find_vectors : bool = False) -> np.ndarray:
+    def symmetric_eigvals(
+        self, 
+        tensor_field : np.ndarray, 
+        find_vectors : bool = False) -> np.ndarray:
         """
         
         Finds the eigenvalues of a symmetric 3x3 matrix from https://hal.science/hal-01501221/document
@@ -502,18 +443,17 @@ class DerivedVars(ScalarOperations,
                         first eigenvalue and so on. Only returned if find_vectors is True.
 
         """
-    
         #define the values of the matrix to be used in computations (NOTE: Assumes all values are real)
-        assert tensor_field.shape[0] == 3 and tensor_field.shape[1] == 3, "Matrix must be 3x3"
+        assert tensor_field.shape[N_COORDS_TENS] == 3 and tensor_field.shape[M_COORDS_TENS] == 3, "Matrix must be 3x3"
         #make sure tensor is symmetric
         assert np.allclose(tensor_field, self.tensor_transpose(tensor_field)), "Matrix must be symmetric"
         
-        a = tensor_field[0,0,:,:,:]
-        b = tensor_field[1,1,:,:,:]
-        c = tensor_field[2,2,:,:,:]
-        d = tensor_field[0,1,:,:,:]
-        e = tensor_field[1,2,:,:,:]
-        f = tensor_field[0,2,:,:,:]
+        a = tensor_field[X,X,:,:,:]
+        b = tensor_field[Y,Y,:,:,:]
+        c = tensor_field[Z,Z,:,:,:]
+        d = tensor_field[X,Y,:,:,:]
+        e = tensor_field[Y,Z,:,:,:]
+        f = tensor_field[X,Z,:,:,:]
 
         #begin the computations
         x1 = a**2 + b**2 + c**2 - a*b - a*c - b*c+3*(d**2 + f**2 + e**2)
@@ -521,25 +461,27 @@ class DerivedVars(ScalarOperations,
                 9*((2*c-a-b)*d**2 + (2*b-a-c)*f**2 + (2*a-b-c)*e**2) - 54*d*e*f
 
         #define what phi is conditional to previous variables
-        condition_list  = [x2>0, x2==0, x2<0]
-        choice_list     = [np.arctan((np.sqrt(4*x1**3-x2**2))/(x2)), 
-                           np.pi/2, 
-                           np.arctan((np.sqrt(4*x1**3-x2**2))/(x2))+np.pi]
+        condition_list  = [x2>0.0, x2==0.0, x2<0.0]
+        choice_list     = [np.arctan((np.sqrt(4.0*x1**3.0-x2**2.0))/(x2)), 
+                           np.pi/2.0, 
+                           np.arctan((np.sqrt(4.0*x1**3.0-x2**2.0))/(x2))+np.pi]
         phi             = np.select(condition_list, choice_list)
 
         #calculate the eigenvalues
         sqrt_x1     = np.sqrt(x1)
-        lambda1     = (a+b+c-2*sqrt_x1*np.cos(phi/3))/3
-        lambda2     = (a+b+c+2*sqrt_x1*np.cos((phi-np.pi)/3))/3
-        lambda3     = (a+b+c+2*sqrt_x1*np.cos((phi+np.pi)/3))/3
+        lambda1     = (a+b+c-2.0*sqrt_x1*np.cos(phi/3.0))/3.0
+        lambda2     = (a+b+c+2.0*sqrt_x1*np.cos((phi-np.pi)/3.0))/3.0
+        lambda3     = (a+b+c+2.0*sqrt_x1*np.cos((phi+np.pi)/3.0))/3.0
         eig_array   = np.array([lambda1, lambda2, lambda3])
 
         #perform the sort, saving indices of sort to use on eigenvectors later
-        idx         = np.argsort(eig_array,
-                                 axis=0)
-        eig_array   = np.take_along_axis(eig_array, 
-                                         idx, 
-                                         axis=0)
+        idx = np.argsort(
+            eig_array,
+            axis=N_COORDS_VEC)
+        eig_array = np.take_along_axis(
+            eig_array, 
+            idx, 
+            axis=N_COORDS_VEC)
         
         if find_vectors:
             #compute the eigenvectors
@@ -555,77 +497,34 @@ class DerivedVars(ScalarOperations,
             del m1, m2, m3, vec1, vec2, vec3
 
             #do the corresponding sort on the vec array
-            vec_array[:,0,:,:,:] = np.take_along_axis(vec_array[:,0,:,:,:], idx, axis=0)
-            vec_array[:,1,:,:,:] = np.take_along_axis(vec_array[:,1,:,:,:], idx, axis=0)
-            vec_array[:,2,:,:,:] = np.take_along_axis(vec_array[:,2,:,:,:], idx, axis=0)
+            vec_array[:,X,:,:,:] = np.take_along_axis(
+                vec_array[:,X,:,:,:], 
+                idx, 
+                axis=N_COORDS_VEC)
+            vec_array[:,Y,:,:,:] = np.take_along_axis(
+                vec_array[:,Y,:,:,:], 
+                idx, 
+                axis=N_COORDS_VEC)
+            vec_array[:,Z,:,:,:] = np.take_along_axis(
+                vec_array[:,Z,:,:,:], 
+                idx, 
+                axis=N_COORDS_VEC)
 
             return eig_array, vec_array
         else:
             return eig_array
         
 
-    def helmholtz_decomposition(self,
-                                vector_field : np.ndarray) -> np.ndarray:
-        """
-        Compute the irrotational and solenoidal components of a vector field using the Helmholtz decomposition
-        in Fourier space (assumes periodic boundary conditions).
-        
-        Author: James Beattie 
-        
-        Args:
-            vector_field (np.ndarray): 3,N,N,N array of vector field, where 
-                                        3 is the vector component and N is the number of grid points in each 
-                                        direction
-
-        Returns:
-            F_irrot (np.ndarray) : 3,N,N,N array of irrotational component of the vector field (curl free)
-            F_solen (np.ndarray) : 3,N,N,N array of solenoidal component of the vector field (divergence free)
-        
-        """
-    
-        N = vector_field.shape
-        
-        # Fourier transform to Fourier space  
-
-        Fhat = fftn(vector_field,
-                    axes=(1, 2, 3),
-                    norm='forward')
-            
-        # initialisations of the irrotational and solenoidal components
-        Fhat_irrot = np.zeros_like(Fhat, dtype=np.complex128)
-        Fhat_solen = np.zeros_like(Fhat, dtype=np.complex128)
-        ksqr       = np.zeros_like(N, dtype=np.float64)
-                
-        # Compute wave numbers
-        k = np.stack(np.meshgrid(2*np.pi * fftfreq(N[1]) * N[1] / self.L[X],
-                                 2*np.pi * fftfreq(N[2]) * N[2] / self.L[Y],
-                                 2*np.pi * fftfreq(N[3]) * N[3] / self.L[Z],
-                                 indexing='ij'),
-                     axis=0)
-        
-        # Avoid division by zero
-        ksqr = self.vector_dot_product(k,k)
-        ksqr[0, 0, 0] = 1
-        
-        # Compute irrotational and solenoidal components in Fourier space and
-        # Inverse Fourier transform to real space
-        F_irrot = np.real(ifftn(self.vector_dot_product(k,Fhat) * k / ksqr,
-                                axes=(1, 2, 3),
-                                norm='forward'))
-        F_solen = np.real(ifftn(Fhat - Fhat_irrot,
-                                axes=(1, 2, 3),
-                                norm='forward'))
-        
-        return F_irrot, F_solen
-
-
-    def vector_curl(self, vector_field: np.ndarray) -> np.ndarray:
+    def vector_curl(
+        self, 
+        vector_field: np.ndarray) -> np.ndarray:
         """
         Optimized curl computation using fused kernel
         """
         if self.num_of_dims == 1:
             raise ValueError("Vector curl is not defined for 1D.")
         elif self.num_of_dims == 2:
+            out = np.zeros_like(vector_field[X])
             # 2D curl still uses separate calls (could be optimized similarly)
             return self.d.gradient(vector_field[1], 
                                  gradient_dir=0,
@@ -636,25 +535,33 @@ class DerivedVars(ScalarOperations,
                                  L=self.L[1],
                                  boundary_condition=self.bcs[1])
         elif self.num_of_dims == 3:
-            # Use the optimized fused kernel
-            return self.d.vector_curl_fast(vector_field, self.L, self.bcs[0])
+            out = np.zeros_like(vector_field)
+            out =  self.d.vector_curl_fast(vector_field, self.L, self.bcs[0])
+            return out
     
-    def vector_divergence(self, vector_field: np.ndarray) -> np.ndarray:
+    def vector_divergence(
+        self,
+        vector_field: np.ndarray) -> np.ndarray:
         """
         Optimized divergence computation using fused kernel
         """
+        out = np.zeros_like(vector_field[0])
+        
         if self.num_of_dims == 3:
             # Use the optimized fused kernel
-            return self.d.vector_divergence_fast(vector_field, self.L, self.bcs[0])
+            #TODO: implement the boundary conditions
+            out = self.d.vector_divergence_fast(vector_field, self.L, self.bcs[0])
+            return out[np.newaxis,...]
         else:
             # Fallback for 1D/2D
-            return np.sum(
+            out = np.sum(
                 np.array([self.d.gradient(vector_field[coord],
                                         gradient_dir=coord,
                                         L=self.L[coord],
                                         boundary_condition=self.bcs[coord]) 
                          for coord in range(self.num_of_dims)]),
                 axis=0)
+            return out[np.newaxis,...]
     
     
     def heating_rate(self,
@@ -662,7 +569,7 @@ class DerivedVars(ScalarOperations,
                      velocity_vector_field : np.ndarray) -> np.ndarray:
         """
         Compute the heating rate of a given species:
-        \dot{Q} = - <P \nabla . u>
+        Heating = - <P nabla . u>
         
         Author: James Beattie
         
@@ -679,8 +586,12 @@ class DerivedVars(ScalarOperations,
         
         """
         
-        return - np.mean(pressure_scalar_field[X] *
-                         self.vector_divergence(velocity_vector_field))
+        out = np.zeros_like(pressure_scalar_field[0])
+        # compute the heating rate
+        out =  - np.mean(pressure_scalar_field[X] *
+                         self.vector_divergence(velocity_vector_field)[X])
+        
+        return out
         
         
     def vector_laplacian(self,
@@ -698,9 +609,11 @@ class DerivedVars(ScalarOperations,
             laplacian vector field (np.ndarray) : 3,N,N,N array of laplacian of the vector field
         
         """
-                    
-        return np.array([self.scalar_laplacian(vector_field[coord]) 
+        
+        out = np.zeros_like(vector_field)
+        out = np.array([self.scalar_laplacian(vector_field[coord]) 
                          for coord in self.coords])
+        return out
 
         
     def scalar_laplacian(self,
@@ -720,13 +633,16 @@ class DerivedVars(ScalarOperations,
         """
         
         # compute and return the laplacian with arbitrary boundary conditions
-        return np.sum(
+        
+        out = np.zeros_like(scalar_field)
+        out = np.sum(
             np.array([self.d.gradient(scalar_field[0],
                                 gradient_dir       = coord,
                                 L                  = self.L[coord],
                                 derivative_order   = 2, 
                                 boundary_condition = self.bcs[coord]) for coord in self.coords]),
             axis=0)
+        return out
 
 
     def scalar_gradient(self,
@@ -746,10 +662,12 @@ class DerivedVars(ScalarOperations,
         
         """
 
-        return np.array([self.d.gradient(scalar_field[0], 
+        out = np.zeros((self.num_of_dims, *scalar_field.shape))
+        out = np.array([self.d.gradient(scalar_field[0], 
                                          gradient_dir = coord,
                                          L            = self.L[coord]) 
                          for coord in self.coords])
+        return out
 
 
     def compute_TNB_basis(self,
@@ -772,15 +690,11 @@ class DerivedVars(ScalarOperations,
         
         """
         ## format: (component, x, y, z)
-        vector_field    = np.array(vector_field)
         field_magn      = self.vector_magnitude(vector_field)
         ## ---- COMPUTE TANGENT BASIS
         t_basis = vector_field / field_magn
         ## df_j/dx_i: (component-j, gradient-direction-i, x, y, z)
-        gradient_tensor = np.array([
-            self.scalar_gradient(field_component)
-            for field_component in vector_field
-        ])
+        gradient_tensor = self.gradient_tensor(vector_field)
         ## ---- COMPUTE NORMAL BASIS
         ## f_i df_j/dx_i
         n_basis_term1 = np.einsum("i...,ji...->j...", 
@@ -879,9 +793,9 @@ class DerivedVars(ScalarOperations,
         a = self.vector_potential(vector_field)
         
         # Compute jacobian of B field
-        self.set_stencil(6)
+        self._set_stencil(6)
         jacobian = self.gradient_tensor(a)
-        self.set_stencil(2)
+        self._set_stencil(2)
         
         # Make jacobian traceless (numerical errors will result in some trace, which is
         # equivalent to div(B) modes)
@@ -1016,5 +930,126 @@ class DerivedVars(ScalarOperations,
             
             return classification_array
         
+    def vector_potential(
+        self,
+        vector_field: np.ndarray,
+        debug: bool = False,
+        field_name: str = "vector_field") -> tuple:
+        """
+        Calculate the vector potential of a vector field in both 2D and 3D.
+        Now with optional debug mode that uses the Derivative class for verification.
         
-## END OF LIBRARY
+        In 3D: Computes A such that B = ∇ × A (Coulomb gauge: ∇·A = 0)
+        In 2D: Computes stream function ψ such that F = ∇ × ψẑ
+        
+        Author:
+            James Beattie (2024)
+
+        Args:
+            vector_field (np.ndarray): The input vector field. 
+                                    For 3D: shape (3, nx, ny, nz)
+                                    For 2D: shape (2, nx, ny)
+            debug (bool): If True, returns the reconstructed vector field for debugging.
+            field_name (str): Name of the field for error messages.
+
+        Returns:
+            For 3D:
+                a (np.ndarray): The vector potential of shape (3, nx, ny, nz).
+                b_recon (np.ndarray, optional): The reconstructed vector field if debug is True.
+            For 2D:
+                psi (np.ndarray): The stream function of shape (nx, ny).
+                F_recon (np.ndarray, optional): The reconstructed vector field if debug is True.
+        """
+        
+        # Ensure data is float32 for memory efficiency
+        vector_field = ensure_float32(vector_field, field_name=field_name)
+        
+        if self.num_of_dims == 3:
+            nx, ny, nz = vector_field.shape[1:]
+            # 3D case
+            # Create wave vectors
+            kx = 2 * np.pi * fftfreq(nx, d=self.L[0]/nx)
+            ky = 2 * np.pi * fftfreq(ny, d=self.L[1]/ny)
+            kz = 2 * np.pi * fftfreq(nz, d=self.L[2]/nz)
+            
+            # Create meshgrid
+            kx_grid, ky_grid, kz_grid = np.meshgrid(kx, ky, kz, indexing='ij')
+            k = np.array([kx_grid, ky_grid, kz_grid], dtype=np.float32)
+            
+            # FFT of vector field
+            field_fft = self._do_fft(
+                vector_field,
+                axes=(1, 2, 3),
+                forward=True,
+                real=np.isrealobj(vector_field),
+                norm='forward'
+            )
+            
+            # Compute vector potential in Fourier space using JIT function
+            a_hat = compute_vector_potential_3D_core(
+                k, 
+                field_fft, 
+                kx_grid, 
+                ky_grid, 
+                kz_grid
+            )
+            
+            # Inverse FFT to get vector potential in real space
+            a = self._do_fft(
+                a_hat,
+                axes=(1, 2, 3),
+                forward=False,
+                real=False,
+                norm='forward'
+            )
+            a = np.real(a).astype(np.float32)
+            
+            if debug:
+                # Reconstruct the vector field using the optimized curl function
+                b_recon = self.vector_curl(a)
+                return a, b_recon
+            
+            return a
+            
+        else:
+            # 2D case
+            nx, ny = vector_field.shape[1:]
+            # Create wave vectors
+            kx = 2 * np.pi * fftfreq(nx, d=self.L[0]/nx)
+            ky = 2 * np.pi * fftfreq(ny, d=self.L[1]/ny)
+            
+            # Create meshgrid
+            kx_grid, ky_grid = np.meshgrid(kx, ky, indexing='ij')
+            k = np.array([kx_grid, ky_grid], dtype=np.float32)
+            
+            # FFT of vector field
+            field_fft = self._do_fft(
+                vector_field,
+                axes=(1, 2),
+                forward=True,
+                real=np.isrealobj(vector_field),
+                norm='forward'
+            )
+            
+            # Compute stream function in Fourier space using JIT function
+            psi_hat = compute_vector_potential_2D_core(
+                k, field_fft, kx_grid, ky_grid
+            )
+            
+            # Inverse FFT to get stream function in real space
+            psi = self._do_fft(
+                psi_hat,
+                axes=(0, 1),
+                forward=False,
+                real=False,
+                norm='forward'
+            )
+            psi = np.real(psi).astype(np.float32)
+            
+            if debug:
+                # Reconstruct using gradient operations
+                # F = ∇ × ψẑ = (∂ψ/∂y, -∂ψ/∂x)
+                grad_psi = self.scalar_gradient(psi)
+                F_recon = np.array([grad_psi[1], -grad_psi[0]])
+                return psi, F_recon
+            return psi
